@@ -163,6 +163,7 @@ pub fn run(conn: &mut Conn, ask: &Ask, memory: &Path) -> Result<String, String> 
             conn.query_drop("DELETE FROM diary_entries WHERE source_file LIKE 'seed/%'").map_err(sql("Removing the seed entries"))?;
             Ok(format!("DIARY {} seed entries removed", conn.affected_rows()))
         }
+        ["diary", "split"] => crate::import::split_dated_diaries(conn).map(|n| format!("DIARY {n} entries cut from old numbered pages")),
         ["diary", "list"] => diary_list(conn, ask),
         ["diary", "show"] => diary_show(conn, ask),
         ["reminder", "add"] => reminder_add(conn, ask),
