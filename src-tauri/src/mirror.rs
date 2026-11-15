@@ -33,9 +33,44 @@ pub fn boot_order(path: &str) -> Option<u32> {
         "main/main-memory.md" => Some(2),
         "main/identity-core.md" => Some(3),
         "main/relationship-memory.md" => Some(4),
+        // an archive is history, read when it is asked for, never at every wake
+        p if p.starts_with("main/") && p.ends_with(".md") && p.to_lowercase().contains("archive") => None,
         p if p.starts_with("main/") && p.ends_with(".md") => Some(10),
         _ => None,
     }
+}
+
+/// How much memory a wake should carry, in characters (about 100k tokens): above it the
+/// companion is told which files make it heavy, so she can stop reading them at boot.
+pub const BOOT_BUDGET: usize = 400_000;
+
+/// Reads one memory file at every wake, or only when it is asked for. The choice is kept:
+/// saving the file later does not change it. False when there is no such file.
+pub fn set_boot(conn: &mut impl Queryable, path: &str, at_boot: bool) -> Result<bool, String> {
+    let there: Option<String> = conn.exec_first("SELECT path FROM memory_files WHERE path = ?", (path,)).map_err(sql("Reading the memory"))?;
+    if there.is_none() {
+        return Ok(false);
+    }
+    let order = at_boot.then(|| boot_order(path).unwrap_or(10));
+    // updated_at is kept: when a file is read is not a change to the memory
+    conn.exec_drop("UPDATE memory_files SET boot_order = ?, updated_at = updated_at WHERE path = ?", (order, path)).map_err(sql("Saving the memory"))?;
+    Ok(true)
+}
+
+/// A word for the companion when the wake is heavier than BOOT_BUDGET, naming the largest files.
+pub fn over_budget(files: &[(String, String)], body: &str) -> String {
+    let size = body.chars().count();
+    if size <= BOOT_BUDGET {
+        return String::new();
+    }
+    let mut heavy: Vec<(usize, &str)> = files.iter().map(|(path, text)| (text.chars().count(), path.as_str())).collect();
+    heavy.sort_by(|a, b| b.cmp(a));
+    let names = heavy.iter().take(5).map(|(n, p)| format!("{p} ({n})")).collect::<Vec<_>>().join(", ");
+    format!(
+        "\nNOTE - this wake carries {size} characters of memory, more than the {BOOT_BUDGET} a wake should. The largest files: {names}. \
+         A file needed only now and then can be read on demand instead: `castle-memory memory boot --path <name> --at-boot no` \
+         (and `memory show --path <name>` reads it whenever it is wanted).\n"
+    )
 }
 
 /// True for the session memory file ("main/current-session.md", "main/current-session-memory.md").
@@ -259,7 +294,8 @@ pub fn save_memory(conn: &mut impl Queryable, path: &str, body: &str) -> Result<
         conn.exec_drop("INSERT INTO memory_file_history (path, body) VALUES (?, ?)", (path, old)).map_err(sql("Keeping the older text"))?;
     }
     conn.exec_drop(
-        "INSERT INTO memory_files (path, body, boot_order, title) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE body = VALUES(body), boot_order = VALUES(boot_order), title = VALUES(title)",
+        // a file that is already there keeps when it is read (set_boot); only its words change
+        "INSERT INTO memory_files (path, body, boot_order, title) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE body = VALUES(body), title = VALUES(title)",
         (path, body, boot_order(path), memory_title(path, body)),
     )
     .map_err(sql("Saving the memory"))?;
@@ -377,7 +413,8 @@ fn memory_body(conn: &mut impl Queryable) -> Result<Option<String>, String> {
     }
     let file = if session.is_empty() { String::new() } else { session_file(conn)?.unwrap_or_default() };
     let engine = crate::traits::engine_for_wake(conn);
-    Ok(Some(compose_body(&files, &engine, &file, &session)))
+    let body = compose_body(&files, &engine, &file, &session);
+    Ok(Some(format!("{}{body}", over_budget(&files, &body))))
 }
 
 /// Everything the companion reads at the start of a session, in order, as one text.
@@ -632,6 +669,17 @@ mod tests {
         files.sort_by_key(|f| (boot_order(f), f.to_string()));
         assert_eq!(files, vec!["master-memory.md", "main/main-memory.md", "main/identity-core.md", "main/relationship-memory.md", "main/notes.md"]);
         assert_eq!(boot_order("daily-diary/daily-diary-protocol.md"), None);
+        // archives are history: read on demand, not at every wake
+        assert_eq!((boot_order("main/session-archive-2026-10.md"), boot_order("main/Reminders-Archive.md"), boot_order("main/decisions.md")), (None, None, Some(10)));
+    }
+
+    #[test]
+    fn a_heavy_wake_names_its_largest_files() {
+        let small = vec![("main/main-memory.md".to_string(), "x".repeat(10))];
+        assert_eq!(over_budget(&small, "short"), "");
+        let files = vec![("main/a.md".to_string(), "a".repeat(BOOT_BUDGET)), ("main/b.md".to_string(), "b".repeat(5))];
+        let note = over_budget(&files, &"z".repeat(BOOT_BUDGET + 1));
+        assert!(note.contains(&format!("carries {} characters", BOOT_BUDGET + 1)) && note.contains(&format!("main/a.md ({BOOT_BUDGET}), main/b.md (5)")) && note.contains("--at-boot no"));
         assert!(is_session_file("main/current-session.md") && is_session_file("main/current-session-memory.md"));
         assert!(!is_session_file("main/identity-core.md") && !is_session_file("current-session.md"));
     }
