@@ -397,7 +397,7 @@ pub(crate) fn wake_with_prompt(app: &AppHandle, store: &SettingsStore, host: &Pt
     let mut vars = env::session_env(settings.cli, &|name| key::load(name), &tools_folder(app), env::NodePlace::First);
     // the drawing styles (standard appearance, turnarounds, try-on) ship beside the tools
     if let Ok(dir) = app.path().resource_dir() {
-        vars.push(("CASTLE_STYLES".into(), dir.join("styles").display().to_string()));
+        vars.push(("CASTLE_STYLES".into(), crate::tree::plain_path(&dir.join("styles"))));
     }
     // Castle's block in CLAUDE.md / AGENTS.md follows the Castle version (the Neural Link's lines
     // reach a member who set up before them); the member's own words outside it are untouched
