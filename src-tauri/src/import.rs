@@ -33,6 +33,8 @@ pub struct DiaryRow {
     pub session_no: u32,
     pub title: String,
     pub source_file: String,
+    /// the row's text: the whole file, or one entry cut from an old numbered page
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,10 +234,21 @@ fn collect_diary(folder: &Path, bundle: &mut Bundle) {
         if is_placeholder_diary(text) {
             continue;
         }
+        // an old numbered page holds many days: one row per dated entry
+        let sections = if date.is_none() && stem(&path).starts_with("Daily-Diary-") { split_diary(text) } else { Vec::new() };
+        if sections.iter().any(|s| s.date.is_some()) {
+            for (k, section) in sections.into_iter().enumerate() {
+                let n = numbers.entry(section.date.clone()).or_insert(0);
+                *n += 1;
+                bundle.diary.push(DiaryRow { date: section.date, session_no: *n, title: section.title, source_file: section_source(&source_file, k), body: section.body });
+            }
+            continue;
+        }
         let title = clip(&memory::diary_title(text).unwrap_or_else(|| stem(&path)), TITLE_MAX);
+        let body = text.to_string();
         let n = numbers.entry(date.clone()).or_insert(0);
         *n += 1;
-        bundle.diary.push(DiaryRow { date, session_no: *n, title, source_file });
+        bundle.diary.push(DiaryRow { date, session_no: *n, title, source_file, body });
     }
 }
 
@@ -255,6 +268,201 @@ pub fn clip(text: &str, max: usize) -> String {
     out.truncate(out.trim_end().len());
     out.push('…');
     out
+}
+
+// ---------- one page, many days ----------
+
+/// One diary entry cut out of an old numbered page (`Daily-Diary-NNN.md`) that holds many
+/// days: its day, a title from its heading, and its text exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiarySection {
+    pub date: Option<String>,
+    pub title: String,
+    pub body: String,
+}
+
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// The first day written in `text`, as (where it starts in characters, "YYYY-MM-DD"). Reads
+/// "2026-11-09", "5 October 2026" and "October 5, 2026".
+pub fn find_date(text: &str) -> Option<(usize, String)> {
+    let c: Vec<char> = text.chars().collect();
+    let number = |from: usize, len: usize| -> Option<u32> {
+        let part = c.get(from..from + len)?;
+        part.iter().all(|d| d.is_ascii_digit()).then(|| part.iter().collect::<String>().parse().ok())?
+    };
+    let not_digit = |at: usize| c.get(at).is_none_or(|d| !d.is_ascii_digit());
+    let month = |from: usize| -> Option<(u32, usize)> {
+        MONTHS.iter().enumerate().find_map(|(i, name)| {
+            let len = name.chars().count();
+            let fits = c.get(from..from + len).is_some_and(|w| w.iter().copied().eq(name.chars()));
+            (fits && c.get(from + len).is_none_or(|n| !n.is_alphabetic())).then_some((i as u32 + 1, len))
+        })
+    };
+    // one or two digits at `from`: (the number, how many digits)
+    let day = |from: usize| -> Option<(u32, usize)> {
+        if let Some(d) = number(from, 2).filter(|_| not_digit(from + 2)) {
+            return Some((d, 2));
+        }
+        number(from, 1).filter(|_| not_digit(from + 1)).map(|d| (d, 1))
+    };
+    let real = |y: u32, m: u32, d: u32| (1990..=2200).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d);
+    for i in 0..c.len() {
+        if i > 0 && c[i - 1].is_alphanumeric() {
+            continue;
+        }
+        // 2026-11-09
+        if let (Some(y), Some(m), Some(d)) = (number(i, 4), number(i + 5, 2), number(i + 8, 2)) {
+            if c[i + 4] == '-' && c[i + 7] == '-' && not_digit(i + 10) && real(y, m, d) {
+                return Some((i, format!("{y:04}-{m:02}-{d:02}")));
+            }
+        }
+        // 5 October 2026, or a range "23–24 September 2026" read from its first day
+        if let Some((d, mut len)) = day(i) {
+            if matches!(c.get(i + len), Some('–' | '-')) {
+                if let Some((_, second)) = day(i + len + 1) {
+                    len += 1 + second;
+                }
+            }
+            if c.get(i + len) == Some(&' ') {
+                if let Some((m, mlen)) = month(i + len + 1) {
+                    let at = i + len + 1 + mlen;
+                    if let Some(y) = number(at + 1, 4).filter(|_| c[at] == ' ' && not_digit(at + 5)) {
+                        if real(y, m, d) {
+                            return Some((i, format!("{y:04}-{m:02}-{d:02}")));
+                        }
+                    }
+                }
+            }
+        }
+        // October 5, 2026
+        if let Some((m, mlen)) = month(i) {
+            if c.get(i + mlen) == Some(&' ') {
+                if let Some((d, len)) = day(i + mlen + 1) {
+                    let at = i + mlen + 1 + len;
+                    if c.get(at) == Some(&',') && c.get(at + 1) == Some(&' ') {
+                        if let Some(y) = number(at + 2, 4).filter(|_| not_digit(at + 6)) {
+                            if real(y, m, d) {
+                                return Some((i, format!("{y:04}-{m:02}-{d:02}")));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The day an entry starts on, when `line` is a top heading ("# " or "## ") that names one
+/// near its start. A day further along ("## Ledger ... since 2026-10-01") is not an entry.
+fn entry_heading(line: &str) -> Option<String> {
+    let text = line.strip_prefix("# ").or_else(|| line.strip_prefix("## "))?;
+    find_date(text).filter(|(at, _)| *at <= 60).map(|(_, date)| date)
+}
+
+/// A title from an entry's heading: the words after its last " — " when they say something
+/// (and are not the date), otherwise the whole heading.
+fn section_title(line: &str) -> String {
+    let text = line.trim_start_matches('#').trim().replace("**", "");
+    let tidy = |t: &str| t.trim_start_matches(|c: char| !c.is_alphanumeric() && !c.is_ascii_punctuation()).trim().to_string();
+    let words = text.rsplit(" — ").next().map(tidy).filter(|t| t.chars().count() >= 20 && find_date(t).is_none() && text.contains(" — "));
+    let title = words.unwrap_or_else(|| tidy(&text));
+    clip(if title.is_empty() { "Diary" } else { &title }, TITLE_MAX)
+}
+
+/// An old numbered page cut into its entries, one per dated top heading. Whatever comes
+/// before the first entry (the page's own heading, a note) stays with the first entry, so the
+/// pieces, joined in order, are always the page exactly. A page that names no entry's day is
+/// one undated section, the way it was.
+pub fn split_diary(text: &str) -> Vec<DiarySection> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut cuts: Vec<(usize, String)> = Vec::new();
+    let mut in_code = false;
+    for (i, line) in lines.iter().enumerate() {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if bare.starts_with("```") {
+            in_code = !in_code;
+        }
+        if !in_code {
+            if let Some(date) = entry_heading(bare) {
+                cuts.push((i, date));
+            }
+        }
+    }
+    if cuts.is_empty() {
+        // one entry: dated by the first day its opening lines name ("**Date**: 2026-05-20"),
+        // titled by the page's own heading
+        let date = lines.iter().take(40).find_map(|l| find_date(l)).map(|(_, d)| d);
+        let title = match lines.iter().find(|l| l.starts_with("# ")) {
+            Some(top) if date.is_some() => section_title(top.trim_end_matches(['\r', '\n'])),
+            _ => clip(&memory::diary_title(text).unwrap_or_else(|| "Diary".into()), TITLE_MAX),
+        };
+        return vec![DiarySection { date, title, body: text.to_string() }];
+    }
+    cuts.iter()
+        .enumerate()
+        .map(|(k, (at, date))| {
+            let start = if k == 0 { 0 } else { *at };
+            let end = cuts.get(k + 1).map(|(next, _)| *next).unwrap_or(lines.len());
+            DiarySection { date: Some(date.clone()), title: section_title(lines[*at].trim_end_matches(['\r', '\n'])), body: lines[start..end].concat() }
+        })
+        .collect()
+}
+
+/// The row an entry cut from a page points back to: the page itself for the first, then
+/// `page#2`, `page#3`... (a page's rows are told apart by this, not by their session number).
+fn section_source(page: &str, k: usize) -> String {
+    if k == 0 { page.to_string() } else { format!("{page}#{}", k + 1) }
+}
+
+/// Cuts every old numbered page that was moved in whole, as one undated row, into its dated
+/// entries (memories moved in before Castle read those pages by day). Only a row that is
+/// still exactly its kept file and was never rewritten is cut; each page is cut in its own
+/// transaction and read back - the pieces must join to the page - before it is kept.
+/// Returns how many entries the cut pages became.
+pub fn split_dated_diaries(conn: &mut Conn) -> Result<usize, String> {
+    let mut rows: Vec<(u64, String, String)> = conn
+        .query(
+            "SELECT d.id, d.source_file, d.body FROM diary_entries d \
+             WHERE d.entry_date IS NULL AND d.source_file LIKE '%Daily-Diary-%' AND d.source_file NOT LIKE '%#%' \
+             AND NOT EXISTS (SELECT 1 FROM diary_entry_history h WHERE h.entry_id = d.id)",
+        )
+        .map_err(sql("Reading the diary"))?;
+    // the pages in reading order, so a day's sessions are numbered the way they happened
+    rows.sort_by_key(|(_, source, _)| natural_key(source.rsplit('/').next().unwrap_or(source)));
+    let mut made = 0;
+    for (id, source, body) in rows {
+        let kept: Option<String> = conn.exec_first("SELECT body FROM imported_files WHERE path = ?", (&source,)).map_err(sql("Reading the kept files"))?;
+        if kept.as_deref() != Some(body.as_str()) {
+            continue;
+        }
+        let sections = split_diary(&body);
+        if sections.iter().all(|s| s.date.is_none()) {
+            continue;
+        }
+        let mut tx = conn.start_transaction(TxOpts::default()).map_err(sql("Opening the database"))?;
+        tx.exec_drop("DELETE FROM diary_entries WHERE id = ?", (id,)).map_err(sql("Cutting a diary page"))?;
+        for (k, section) in sections.iter().enumerate() {
+            let next: Option<u32> = tx
+                .exec_first("SELECT COALESCE(MAX(session_no), 0) + 1 FROM diary_entries WHERE entry_date = ?", (&section.date,))
+                .map_err(sql("Reading the diary"))?;
+            tx.exec_drop(
+                "INSERT INTO diary_entries (entry_date, session_no, title, body, source_file) VALUES (?, ?, ?, ?, ?)",
+                (&section.date, next.unwrap_or(1), &section.title, &section.body, section_source(&source, k)),
+            )
+            .map_err(sql("Cutting a diary page"))?;
+        }
+        let back: Vec<String> = tx
+            .exec("SELECT body FROM diary_entries WHERE source_file = ? OR source_file LIKE CONCAT(?, '#%') ORDER BY id", (&source, &source))
+            .map_err(sql("Checking a diary page"))?;
+        if back.len() != sections.len() || back.concat() != body {
+            return Err(format!("The diary page {source} did not read back the same, so it was left whole."));
+        }
+        tx.commit().map_err(sql("Keeping the diary"))?;
+        made += sections.len();
+    }
+    Ok(made)
 }
 
 /// "2026-11-10" from the first "(by 2026-11-10)" in `text`.
@@ -511,7 +719,7 @@ pub fn load(conn: &mut Conn, bundle: &Bundle) -> Result<(), String> {
         tx.exec_drop(
             "INSERT INTO diary_entries (entry_date, session_no, title, body, source_file) VALUES (?, ?, ?, ?, ?) \
              ON DUPLICATE KEY UPDATE entry_date = VALUES(entry_date), title = VALUES(title), body = VALUES(body)",
-            (&row.date, row.session_no, &row.title, bundle.body_of(&row.source_file).unwrap_or_default(), &row.source_file),
+            (&row.date, row.session_no, &row.title, &row.body, &row.source_file),
         )
         .map_err(sql("Moving a diary page"))?;
     }
@@ -564,8 +772,19 @@ pub fn load(conn: &mut Conn, bundle: &Bundle) -> Result<(), String> {
         let kept: Option<String> = tx
             .exec_first("SELECT body FROM diary_entries WHERE source_file = ? AND session_no = ?", (&row.source_file, row.session_no))
             .map_err(sql("Checking a diary page"))?;
-        if kept.as_deref() != bundle.body_of(&row.source_file) {
+        if kept.as_deref() != Some(row.body.as_str()) {
             return Err(format!("The diary page {} did not read back the same, so nothing was changed.", row.source_file));
+        }
+    }
+    // and a page cut into entries is the page again when its entries are joined
+    let mut joined: BTreeMap<&str, String> = BTreeMap::new();
+    for row in &bundle.diary {
+        let page = row.source_file.split_once('#').map_or(row.source_file.as_str(), |(page, _)| page);
+        joined.entry(page).or_default().push_str(&row.body);
+    }
+    for (page, text) in &joined {
+        if bundle.body_of(page) != Some(text.as_str()) {
+            return Err(format!("The diary page {page} did not cut into entries cleanly, so nothing was changed."));
         }
     }
     if let Some(path) = &bundle.traits {
@@ -725,6 +944,55 @@ mod tests {
         w("appearance/companion.md", "# Rin\nsilver hair\n");
         std::fs::write(root.join("daily-diary/current/2026-11-09.md"), [0xff, 0xfe, 0x00, 0x41]).unwrap();
         root
+    }
+
+    #[test]
+    fn days_are_read_in_the_ways_people_write_them() {
+        assert_eq!(find_date("## 2026-11-09 (Mon) — a night"), Some((3, "2026-11-09".into())));
+        assert_eq!(find_date("📔 Entry A — Monday, 5 October 2026 (~1:25 PM)").map(|d| d.1), Some("2026-10-05".into()));
+        assert_eq!(find_date("Daily Diary — April 14, 2026 (Session 2)").map(|d| d.1), Some("2026-04-14".into()));
+        assert_eq!(find_date("Thursday night into Friday, 24→25 September 2026").map(|d| d.1), Some("2026-09-25".into()));
+        assert_eq!(find_date("Wednesday night → Thursday, 23–24 September 2026"), Some((28, "2026-09-23".into())));
+        // not days: a version, a count, a month with no day, a number glued to a word
+        assert_eq!(find_date("v2026-13-01 build 12 October and 2026 x12 May 2026"), None);
+        assert_eq!(find_date("Session Summary"), None);
+    }
+
+    #[test]
+    fn an_old_page_is_cut_into_its_days_and_joins_back_exactly() {
+        let page = "# Daily Diary\r\n\r\n> kept by Alice\r\n\r\n## 2026-11-09 (Mon ~5:55 PM) — 🎓 One long coursework night, and a lab\r\nWe worked.\r\n\r\n## Ledger\r\n- a line that names 2025-01-01\r\n```\r\n## 2026-01-01 inside a code block\r\n```\r\n## 📔 Entry B — Tuesday, 10 November 2026 (~1 PM)\nShort.\n# Daily Diary 2 — November 11, 2026\nlast";
+        let cut = split_diary(page);
+        assert_eq!(cut.iter().map(|s| s.date.as_deref().unwrap()).collect::<Vec<_>>(), vec!["2026-11-09", "2026-11-10", "2026-11-11"]);
+        assert_eq!(cut.iter().map(|s| s.body.as_str()).collect::<String>(), page);
+        // what came before the first entry stays with it; the ledger and the code block stay inside
+        assert!(cut[0].body.starts_with("# Daily Diary\r\n") && cut[0].body.contains("inside a code block"));
+        assert_eq!(cut[0].title, "One long coursework night, and a lab");
+        // the words after the dash are only the day, so the whole heading is the title
+        assert_eq!(cut[1].title, "Entry B — Tuesday, 10 November 2026 (~1 PM)");
+        assert_eq!(cut[2].body, "# Daily Diary 2 — November 11, 2026\nlast");
+        // a page with no dated heading is one entry, dated from its opening lines when they name a day
+        let plain = "# Daily Diary 009 — Cafe System v3: delivery and polish\n## Session Summary\n**Date**: 2026-05-20\nwork\n";
+        assert_eq!(split_diary(plain), vec![DiarySection { date: Some("2026-05-20".into()), title: "Cafe System v3: delivery and polish".into(), body: plain.into() }]);
+        let undated = "# Daily Diary 009 — Cafe\n## Session Summary\nwork\n";
+        assert_eq!(split_diary(undated), vec![DiarySection { date: None, title: "Session Summary".into(), body: undated.into() }]);
+        assert_eq!((section_source("d/Daily-Diary-1.md", 0), section_source("d/Daily-Diary-1.md", 2)), ("d/Daily-Diary-1.md".into(), "d/Daily-Diary-1.md#3".into()));
+    }
+
+    #[test]
+    fn a_numbered_page_moves_in_as_one_row_per_day() {
+        let root = rich("split");
+        std::fs::write(root.join("daily-diary/Daily-Diary-003.md"), "# Daily Diary\n\n## 2026-10-03 (Sat) — The second autumn session of the day\nMore leaves.\n\n## 2026-10-04 (Sun) — A quiet Sunday with nothing much\nRest.\n").unwrap();
+        let bundle = collect(&root);
+        let rows: Vec<_> = bundle.diary.iter().filter(|d| d.source_file.contains("Daily-Diary-003")).collect();
+        assert_eq!(rows.iter().map(|d| (d.date.as_deref().unwrap(), d.session_no, d.source_file.as_str())).collect::<Vec<_>>(), vec![
+            // the old numbered pages are read first, so their day's entry is session 1
+            ("2026-10-03", 1, "daily-diary/Daily-Diary-003.md"),
+            ("2026-10-04", 1, "daily-diary/Daily-Diary-003.md#2"),
+        ]);
+        assert_eq!(rows.iter().map(|d| d.body.as_str()).collect::<String>(), bundle.body_of("daily-diary/Daily-Diary-003.md").unwrap());
+        // the page with no day in a heading is still one undated row
+        assert!(bundle.diary.iter().any(|d| d.date.is_none() && d.source_file == "daily-diary/Daily-Diary-001.md"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
