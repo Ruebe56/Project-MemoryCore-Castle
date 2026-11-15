@@ -64,7 +64,8 @@ pub fn picture_way(codex_chatgpt: impl FnOnce() -> bool, has_openai_key: bool) -
 pub fn session_env(cli: Cli, key: &dyn Fn(&str) -> Option<String>, tools: &Path) -> Vec<(String, String)> {
     let mut vars = vec![
         ("CASTLE_CLI".to_string(), cli.command().to_string()),
-        ("CASTLE_TOOLS".to_string(), tools.display().to_string()),
+        // without the \\?\ prefix canonicalize adds: cmd.exe cannot start a script from such a path
+        ("CASTLE_TOOLS".to_string(), crate::tree::plain_path(tools)),
     ];
     // castle-memory (in the tools folder) starts this same program with --memory
     if let Ok(exe) = std::env::current_exe() {
@@ -139,6 +140,9 @@ mod tests {
         assert_eq!(get(&vars, "CASTLE_IMAGE"), Some("openai"));
         assert_eq!(get(&vars, "ARK_API_KEY"), None);
         assert_eq!(get(&vars, "CASTLE_TOOLS"), Some("C:\\tools"));
+        // the resource folder Tauri resolves can carry \\?\, which cmd.exe cannot start a script from
+        let vars = session_env(Cli::Claude, &keys(&[]), Path::new(r"\\?\D:\Castle\tools"));
+        assert_eq!(get(&vars, "CASTLE_TOOLS"), Some(r"D:\Castle\tools"));
     }
 
     #[test]
