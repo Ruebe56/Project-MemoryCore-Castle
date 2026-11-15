@@ -232,23 +232,64 @@ fn collect_diary(folder: &Path, bundle: &mut Bundle) {
         if is_placeholder_diary(text) {
             continue;
         }
-        let title = memory::diary_title(text).unwrap_or_else(|| stem(&path));
+        let title = clip(&memory::diary_title(text).unwrap_or_else(|| stem(&path)), TITLE_MAX);
         let n = numbers.entry(date.clone()).or_insert(0);
         *n += 1;
         bundle.diary.push(DiaryRow { date, session_no: *n, title, source_file });
     }
 }
 
-/// One reminder line: "- **Title** (by 2026-11-10): what".
+/// The longest title or name a row holds (VARCHAR(255)), and the longest status or date
+/// (VARCHAR(64)), in characters as the database counts them.
+const TITLE_MAX: usize = 255;
+const SHORT_MAX: usize = 64;
+
+/// `text` cut to at most `max` characters, ending in "…" when it was longer. A row is only a
+/// view of its file - the file itself is kept whole in imported_files - so a long title is
+/// shortened rather than failing the whole move.
+pub fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.truncate(out.trim_end().len());
+    out.push('…');
+    out
+}
+
+/// "2026-11-10" from the first "(by 2026-11-10)" in `text`.
+fn by_date(text: &str) -> Option<String> {
+    text.split_once("(by ").and_then(|(_, rest)| rest.split(')').next()).map(|d| d.trim().to_string()).filter(|d| crate::door::is_date(d))
+}
+
+/// One reminder line: "- **Title** (by 2026-11-10): what". The title is the first bold part
+/// (it may hold a colon of its own); every word after it stays in the detail, so a line with
+/// several bold parts keeps all of them.
 pub fn reminder_line(item: &str, open: bool) -> Option<ReminderRow> {
     let item = item.trim();
-    let (head, detail) = item.split_once(':').map(|(h, d)| (h.trim(), d.trim())).unwrap_or((item, ""));
-    let due = head.split_once("(by ").and_then(|(_, rest)| rest.split(')').next()).map(|d| d.trim().to_string()).filter(|d| crate::door::is_date(d));
-    let title = match (head.find("**"), head.rfind("**")) {
-        (Some(a), Some(b)) if b > a + 2 => head[a + 2..b].trim(),
-        _ => head.split(" (").next().unwrap_or(head).trim().trim_matches('*').trim(),
+    let colon = item.find(':');
+    let bold = item.find("**").filter(|&a| colon.is_none_or(|c| a < c)).and_then(|a| {
+        let len = item[a + 2..].find("**")?;
+        (len > 0).then_some((a + 2, a + 2 + len))
+    });
+    let (title, after) = match bold {
+        Some((start, end)) => (item[start..end].trim(), &item[end + 2..]),
+        None => {
+            let head = colon.map_or(item, |c| &item[..c]);
+            let words = head.split(" (").next().unwrap_or(head);
+            (words.trim().trim_matches('*').trim(), &item[words.len()..])
+        }
     };
-    (!title.is_empty()).then(|| ReminderRow { title: title.to_string(), due, detail: detail.to_string(), open })
+    let mut rest = after.trim();
+    let mut due = None;
+    // "(by 2026-11-10)" or "(completed 2026-11-01)" right after the title is a date, not words
+    if let Some((group, more)) = rest.strip_prefix('(').and_then(|r| r.split_once(')')) {
+        due = by_date(&format!("({group})"));
+        rest = more.trim();
+    }
+    let due = due.or_else(|| by_date(rest.split(':').next().unwrap_or(rest)));
+    let detail = rest.strip_prefix(':').unwrap_or(rest).trim().to_string();
+    (!title.is_empty()).then(|| ReminderRow { title: clip(title, TITLE_MAX), due, detail, open })
 }
 
 fn collect_reminders(folder: &Path, bundle: &mut Bundle) {
@@ -296,37 +337,84 @@ fn project_error(name: &str, error: &mysql::Error) -> String {
     format!("Moving the project \"{name}\" did not work ({why}), so nothing was changed.")
 }
 
+/// Which cell of a project table holds what, read from the table's header row:
+/// "| Pos | Project | Last Updated | Status |" and "| Project | Archived | Reason |" alike.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ProjectColumns {
+    name: usize,
+    updated: Option<usize>,
+    status: Option<usize>,
+}
+
+impl ProjectColumns {
+    /// Castle's own list, and how a table without a header row is read.
+    const STANDARD: ProjectColumns = ProjectColumns { name: 1, updated: Some(2), status: Some(3) };
+
+    /// None when the header names no project, so the table is something else (a status table).
+    fn from_header(cells: &[&str]) -> Option<ProjectColumns> {
+        let find = |words: &[&str]| cells.iter().position(|cell| words.iter().any(|w| cell.to_lowercase().contains(w)));
+        Some(ProjectColumns { name: find(&["project", "name"])?, updated: find(&["updated", "archived", "date"]), status: find(&["status", "reason"]) })
+    }
+}
+
+fn table_cells(line: &str) -> Vec<&str> {
+    line.trim().trim_matches('|').split('|').map(str::trim).collect()
+}
+
+/// "|-----|:---:|" - the line under a table's header.
+fn is_table_rule(line: &str) -> bool {
+    let cells = table_cells(line);
+    cells.iter().all(|c| c.chars().all(|ch| matches!(ch, '-' | ':' | ' '))) && cells.iter().any(|c| c.contains('-'))
+}
+
 /// The project list's rows (both shelves), then every project page the list does not name.
 fn collect_projects(folder: &Path, bundle: &mut Bundle) {
     let projects = folder.join("projects");
     let list = projects.join("project-list.md");
     if bundle.take(folder, &list) {
         let text = bundle.body_of("projects/project-list.md").unwrap_or_default().to_string();
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
         let mut archived = false;
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if let Some(heading) = trimmed.strip_prefix("## ") {
+        // the table being read: None between tables, Some(None) for a table that lists no projects
+        let mut table: Option<Option<ProjectColumns>> = None;
+        for (i, &line) in lines.iter().enumerate() {
+            if let Some(heading) = line.strip_prefix("## ") {
                 archived = heading.to_lowercase().contains("archiv");
+                table = None;
                 continue;
             }
-            if !trimmed.starts_with('|') || trimmed.contains("---") {
+            if !line.starts_with('|') {
+                table = None;
                 continue;
             }
-            let cells: Vec<&str> = trimmed.trim_matches('|').split('|').map(str::trim).collect();
-            if cells.len() < 2 || cells[0].eq_ignore_ascii_case("pos") || cells[1].eq_ignore_ascii_case("project") || cells[1].is_empty() {
+            if is_table_rule(line) {
                 continue;
             }
-            let cell = cells[1];
-            let (name, file) = match (cell.find('['), cell.find("]("), cell.rfind(')')) {
-                (Some(a), Some(b), Some(c)) if a < b && b < c => (cell[a + 1..b].to_string(), Some(format!("projects/{}", cell[b + 2..c].trim_start_matches("./")))),
-                _ => (cell.to_string(), None),
+            let cells = table_cells(line);
+            let columns = match table {
+                Some(columns) => columns,
+                None if lines.get(i + 1).is_some_and(|next| next.starts_with('|') && is_table_rule(next)) => {
+                    table = Some(ProjectColumns::from_header(&cells));
+                    continue;
+                }
+                None => *table.insert(Some(ProjectColumns::STANDARD)),
+            };
+            let Some(columns) = columns else { continue };
+            let cell_at = |i: Option<usize>| i.and_then(|i| cells.get(i)).map(|c| c.to_string()).filter(|c| !c.is_empty());
+            let Some(cell) = cell_at(Some(columns.name)) else { continue };
+            let link = cell.find('[').zip(cell.find("](")).filter(|(a, b)| a < b).and_then(|(a, b)| cell[b..].find(')').map(|c| (a, b, b + c)));
+            let (name, file) = match link {
+                Some((a, b, c)) => (cell[a + 1..b].to_string(), Some(format!("projects/{}", cell[b + 2..c].trim_start_matches("./")))),
+                None => (cell.clone(), None),
             };
             let source_file = file.filter(|f| bundle.take(folder, &folder.join(f)));
-            let cell_at = |i: usize| cells.get(i).map(|c| c.to_string()).filter(|c| !c.is_empty());
-            // the list's cells can be a whole sentence; the database's columns hold 64 characters
-            let status = cell_at(3).map(|c| fit(&c, PROJECT_TEXT_MAX));
-            let last_updated = cell_at(2).map(|c| fit(&c, PROJECT_TEXT_MAX));
-            bundle.projects.push(ProjectRow { name, status, archived, last_updated, source_file });
+            bundle.projects.push(ProjectRow {
+                name: clip(&name, TITLE_MAX),
+                status: cell_at(columns.status).map(|s| fit(&s, PROJECT_TEXT_MAX)),
+                archived,
+                last_updated: cell_at(columns.updated).map(|s| fit(&s, PROJECT_TEXT_MAX)),
+                source_file,
+            });
         }
     }
     let mut pages = Vec::new();
@@ -340,7 +428,7 @@ fn collect_projects(folder: &Path, bundle: &mut Bundle) {
             continue;
         }
         let text = bundle.body_of(&source).unwrap_or_default();
-        let name = text.lines().find_map(|l| l.trim().strip_prefix("# ")).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| stem(&path));
+        let name = clip(&text.lines().find_map(|l| l.trim().strip_prefix("# ")).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| stem(&path)), TITLE_MAX);
         if bundle.projects.iter().any(|p| p.name == name) {
             // a second page with a name already taken stays kept as a file in the database only
             continue;
@@ -696,6 +784,66 @@ mod tests {
         assert_eq!((done.title.as_str(), done.due, done.open), ("Buy a new notebook", None, false));
         assert_eq!(reminder_line("Water plants", true).unwrap().title, "Water plants");
         assert!(reminder_line("  ", true).is_none());
+    }
+
+    #[test]
+    fn a_reminder_with_several_bold_parts_keeps_the_first_as_its_title_and_every_word() {
+        let row = reminder_line("🎓 **Thesis draft — STANDING (since 2026-10-01).** Chapter **3** is with the supervisor (by 2026-12-20): ask about the **figures**", true).unwrap();
+        assert_eq!(row.title, "Thesis draft — STANDING (since 2026-10-01).");
+        assert_eq!(row.due.as_deref(), Some("2026-12-20"));
+        assert_eq!(row.detail, "Chapter **3** is with the supervisor (by 2026-12-20): ask about the **figures**");
+        // a colon inside the bold title stays in the title
+        let row = reminder_line("**Renew the domain: example.org** (by 2026-12-01): before it lapses", true).unwrap();
+        assert_eq!((row.title.as_str(), row.due.as_deref(), row.detail.as_str()), ("Renew the domain: example.org", Some("2026-12-01"), "before it lapses"));
+        // a title longer than the column is shortened, never refused
+        let row = reminder_line(&format!("**{}**: detail", "word ".repeat(80)), true).unwrap();
+        assert!(row.title.chars().count() <= TITLE_MAX && row.title.starts_with("word word") && row.title.ends_with('…'));
+        assert_eq!(row.detail, "detail");
+    }
+
+    #[test]
+    fn clip_counts_characters_the_way_the_database_does() {
+        assert_eq!(clip("short", 64), "short");
+        let hearts = clip(&"💜".repeat(300), TITLE_MAX);
+        assert_eq!(hearts.chars().count(), TITLE_MAX);
+        assert!(hearts.ends_with('…'));
+    }
+
+    #[test]
+    fn every_project_table_is_read_by_its_header_and_long_cells_are_shortened() {
+        let root = std::env::temp_dir().join(format!("castle-import-tables-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, text) in [("projects/active/garden.md", "# Garden planner\n"), ("projects/archived/old-blog.md", "# Old blog\nRetired.\n")] {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), text).unwrap();
+        }
+        let status = format!("Live ── {}", "details ".repeat(20));
+        std::fs::write(
+            root.join("projects/project-list.md"),
+            format!(
+                "# Project List\n## Active Projects (1/10)\n| Pos | Project | Last Updated | Status |\n|-----|---------|--------------|--------|\n\
+                 | #1 | [Garden planner](active/garden.md) · beta (v2) | 2026-11-08 | {status} |\n\n\
+                 ## Archived Projects (1)\n| Project | Archived | Reason |\n|---------|----------|--------|\n\
+                 | [Old blog](archived/old-blog.md) | 2026-09-24 | Moved to the new site (see notes) |\n\n\
+                 ## System Status\n| Metric | Value |\n|---|---|\n| Total | 2 |\n"
+            ),
+        )
+        .unwrap();
+        let bundle = collect(&root);
+        assert_eq!(bundle.projects.len(), 2, "the status table is not a project list");
+        let garden = &bundle.projects[0];
+        assert_eq!((garden.name.as_str(), garden.archived, garden.last_updated.as_deref()), ("Garden planner", false, Some("2026-11-08")));
+        // the link ends at its own ")", not at the last one in the cell
+        assert_eq!(garden.source_file.as_deref(), Some("projects/active/garden.md"));
+        let kept = garden.status.as_deref().unwrap();
+        assert!(kept.chars().count() <= SHORT_MAX && kept.starts_with("Live ──") && kept.ends_with('…'));
+        // the archived table names its columns differently: Project | Archived | Reason
+        let old = &bundle.projects[1];
+        assert_eq!(
+            (old.name.as_str(), old.archived, old.last_updated.as_deref(), old.status.as_deref(), old.source_file.as_deref()),
+            ("Old blog", true, Some("2026-09-24"), Some("Moved to the new site (see notes)"), Some("projects/archived/old-blog.md"))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
