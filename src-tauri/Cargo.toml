@@ -50,3 +50,6 @@ tauri-winrt-notification = "0.8"
 # (and the CPU gauge reads processor time with GetSystemTimes, from Threading; DEV's live servers
 # read the listening ports from IP Helper)
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Media_Audio", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_ProcessStatus"] }
+# the VRAM gauge: DXGI names the graphics card and its total memory, and the "GPU Adapter Memory"
+# counters say how much of it is in use (the figure Task Manager shows); same version Tauri already uses
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_System_Performance"] }

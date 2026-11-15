@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { meterTrimNow, meterTrips, meterWatchGet, meterWatchSave, systemMeters } from '../../api/castle.js'
 import { DEFAULT_LIMIT, boundLimit, freedLine, isHot, sizeLabel, timeLabel } from '../meterWatch.js'
 
@@ -9,7 +9,18 @@ defineOptions({ inheritAttrs: false })
 
 const RADIUS = 30
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
-const meters = ref({ cpu: 0, memory: 0 })
+const meters = ref({ cpu: 0, memory: 0, vram: null, vramUsed: null, vramTotal: null })
+
+// "6.2 / 7.8 GB", in the GiB Task Manager uses.
+const GIB = 1024 ** 3
+const vramLine = (m) => (m.vramUsed == null || !m.vramTotal ? '' : `${(m.vramUsed / GIB).toFixed(1)} / ${(m.vramTotal / GIB).toFixed(1)} GB`)
+
+// VRAM appears only when the graphics card can be read; a computer without one keeps two gauges.
+const gauges = computed(() => [
+  { key: 'cpu', label: 'CPU', value: meters.value.cpu, limit: watch.value.cpu },
+  { key: 'memory', label: 'RAM', value: meters.value.memory, limit: watch.value.memory },
+  ...(meters.value.vram == null ? [] : [{ key: 'vram', label: 'VRAM', value: meters.value.vram, line: vramLine(meters.value) }]),
+])
 let timer
 
 // The gear: watch on or off, the value each meter trips at, Tidy RAM now, and the last trips.
@@ -115,16 +126,16 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="card" class="widget gauges">
-    <div v-for="gauge in [
-      { key: 'cpu', label: 'CPU', value: meters.cpu, limit: watch.cpu },
-      { key: 'memory', label: 'RAM', value: meters.memory, limit: watch.memory },
-    ]" :key="gauge.key" class="gauge" role="meter" :aria-label="gauge.label" :aria-valuenow="gauge.value" aria-valuemin="0" aria-valuemax="100">
-      <svg viewBox="0 0 80 80" aria-hidden="true">
-        <circle cx="40" cy="40" :r="RADIUS" class="track" />
-        <circle cx="40" cy="40" :r="RADIUS" class="fill" :class="[gauge.key, { hot: isHot(gauge.value, gauge.limit, watch.on) }]" :stroke-dasharray="dash(gauge.value)" />
-      </svg>
-      <span class="value">{{ gauge.value }}%</span>
-      <span class="label">{{ gauge.label }}</span>
+    <div v-for="gauge in gauges" :key="gauge.key" class="gauge-col">
+      <div class="gauge" role="meter" :aria-label="gauge.line ? `${gauge.label}, ${gauge.line}` : gauge.label" :aria-valuenow="gauge.value" aria-valuemin="0" aria-valuemax="100" :title="gauge.line || null">
+        <svg viewBox="0 0 80 80" aria-hidden="true">
+          <circle cx="40" cy="40" :r="RADIUS" class="track" />
+          <circle cx="40" cy="40" :r="RADIUS" class="fill" :class="[gauge.key, { hot: gauge.limit != null && isHot(gauge.value, gauge.limit, watch.on) }]" :stroke-dasharray="dash(gauge.value)" />
+        </svg>
+        <span class="value">{{ gauge.value }}%</span>
+        <span class="label">{{ gauge.label }}</span>
+      </div>
+      <span v-if="gauge.line" class="line">{{ gauge.line }}</span>
     </div>
 
     <button class="gear" type="button" :class="{ on: gearOpen }" aria-label="Watch CPU and RAM" title="Watch CPU and RAM" :aria-expanded="gearOpen" @click="toggleGear">
@@ -199,6 +210,23 @@ circle {
 
 .fill.memory {
   stroke: var(--accent-2, #8cc8ff);
+}
+
+.fill.vram {
+  stroke: var(--accent-3, #b89cff);
+}
+
+.gauge-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.line {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
 }
 
 .fill.hot {

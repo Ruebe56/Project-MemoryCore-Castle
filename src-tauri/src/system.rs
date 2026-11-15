@@ -1,4 +1,5 @@
-//! The two gauges: how busy the processor is and how full the memory is, on this computer.
+//! The gauges: how busy the processor is, how full the memory is and, when the computer has a
+//! graphics card that can be read, how full its video memory is.
 
 use serde::Serialize;
 use std::sync::Mutex;
@@ -11,6 +12,138 @@ pub struct Meters {
     pub cpu: u8,
     /// Percent of memory in use, 0 to 100.
     pub memory: u8,
+    /// Percent of the graphics card's own memory in use, 0 to 100. None when it cannot be read,
+    /// and the page then shows no VRAM gauge at all rather than a wrong one.
+    pub vram: Option<u8>,
+    /// Bytes of video memory in use and in all, for the "3.1 / 8 GB" line under the gauge.
+    pub vram_used: Option<u64>,
+    pub vram_total: Option<u64>,
+}
+
+/// The graphics card's instance in the "GPU Adapter Memory" counters starts with its LUID, high
+/// part first: `luid_0x00000000_0x0000D1A3_phys_0`. One card can have several instances.
+pub fn luid_prefix(high: i32, low: u32) -> String {
+    format!("luid_0x{:08x}_0x{:08x}", high as u32, low)
+}
+
+/// Adds up the dedicated memory in use across the instances that belong to one card.
+pub fn vram_in_use<'a>(prefix: &str, readings: impl IntoIterator<Item = (&'a str, i64)>) -> Option<u64> {
+    let mut found = false;
+    let mut sum: u64 = 0;
+    for (name, bytes) in readings {
+        if name.to_ascii_lowercase().starts_with(prefix) && bytes >= 0 {
+            found = true;
+            sum = sum.saturating_add(bytes as u64);
+        }
+    }
+    found.then_some(sum)
+}
+
+/// Reads the graphics card with the most dedicated memory (the real GPU on a laptop that also has
+/// one built into the processor). Software adapters are skipped.
+#[cfg(windows)]
+mod gpu {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE};
+    use windows::Win32::System::Performance::{
+        PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+        PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_LARGE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
+    };
+
+    pub struct Gpu {
+        query: PDH_HQUERY,
+        counter: PDH_HCOUNTER,
+        prefix: String,
+        pub total: u64,
+    }
+
+    // SAFETY: the PDH handles are only touched while the meters' Mutex is held, one thread at a time.
+    unsafe impl Send for Gpu {}
+
+    impl Drop for Gpu {
+        fn drop(&mut self) {
+            // SAFETY: the query was opened by PdhOpenQueryW and is closed exactly once.
+            unsafe { PdhCloseQuery(self.query) };
+        }
+    }
+
+    impl Gpu {
+        pub fn open() -> Option<Self> {
+            // SAFETY: plain DXGI calls; every result is checked before use.
+            let (high, low, total) = unsafe {
+                let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
+                let mut best: Option<(i32, u32, u64)> = None;
+                let mut i = 0;
+                while let Ok(adapter) = factory.EnumAdapters1(i) {
+                    i += 1;
+                    let Ok(desc) = adapter.GetDesc1() else { continue };
+                    if desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
+                        continue;
+                    }
+                    let total = desc.DedicatedVideoMemory as u64;
+                    if total > 0 && best.is_none_or(|(_, _, b)| total > b) {
+                        best = Some((desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart, total));
+                    }
+                }
+                best?
+            };
+            let mut query = PDH_HQUERY::default();
+            let mut counter = PDH_HCOUNTER::default();
+            // SAFETY: both out-pointers are live locals; the query is closed if the counter fails.
+            unsafe {
+                if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
+                    return None;
+                }
+                if PdhAddEnglishCounterW(query, w!("\\GPU Adapter Memory(*)\\Dedicated Usage"), 0, &mut counter) != 0 {
+                    PdhCloseQuery(query);
+                    return None;
+                }
+                PdhCollectQueryData(query);
+            }
+            Some(Gpu { query, counter, prefix: super::luid_prefix(high, low), total })
+        }
+
+        /// Bytes of the card's dedicated memory in use now.
+        pub fn used(&self) -> Option<u64> {
+            // SAFETY: the buffer is sized by PDH's own first answer and read only up to `count` items.
+            unsafe {
+                if PdhCollectQueryData(self.query) != 0 {
+                    return None;
+                }
+                let (mut size, mut count) = (0u32, 0u32);
+                if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_LARGE, &mut size, &mut count, None) != PDH_MORE_DATA {
+                    return None;
+                }
+                let items = (size as usize).div_ceil(std::mem::size_of::<PDH_FMT_COUNTERVALUE_ITEM_W>());
+                let mut buffer = vec![PDH_FMT_COUNTERVALUE_ITEM_W::default(); items.max(1)];
+                if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_LARGE, &mut size, &mut count, Some(buffer.as_mut_ptr())) != 0 {
+                    return None;
+                }
+                let count = (count as usize).min(buffer.len());
+                let readings: Vec<(String, i64)> = buffer[..count]
+                    .iter()
+                    .filter(|item| item.FmtValue.CStatus == 0)
+                    .map(|item| (item.szName.to_string().unwrap_or_default(), item.FmtValue.Anonymous.largeValue))
+                    .collect();
+                super::vram_in_use(&self.prefix, readings.iter().map(|(n, b)| (n.as_str(), *b)))
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod gpu {
+    pub struct Gpu {
+        pub total: u64,
+    }
+    impl Gpu {
+        pub fn open() -> Option<Self> {
+            None
+        }
+        pub fn used(&self) -> Option<u64> {
+            None
+        }
+    }
 }
 
 /// Percent, rounded and kept within 0..=100.
@@ -65,6 +198,7 @@ struct State {
     system: System,
     last_times: Option<CpuTimes>,
     last_cpu: u8,
+    gpu: Option<gpu::Gpu>,
 }
 
 /// Processor use needs two readings apart in time, so the state lives for the whole run.
@@ -73,7 +207,7 @@ pub struct SystemMeters(Mutex<Option<State>>);
 
 impl Default for SystemMeters {
     fn default() -> Self {
-        let state = System::new().ok().map(|system| State { system, last_times: cpu_times(), last_cpu: 0 });
+        let state = System::new().ok().map(|system| State { system, last_times: cpu_times(), last_cpu: 0, gpu: gpu::Gpu::open() });
         Self(Mutex::new(state))
     }
 }
@@ -82,7 +216,7 @@ impl SystemMeters {
     pub fn read(&self) -> Meters {
         let mut guard = self.0.lock().unwrap();
         let Some(state) = guard.as_mut() else {
-            return Meters { cpu: 0, memory: 0 };
+            return Meters { cpu: 0, memory: 0, vram: None, vram_used: None, vram_total: None };
         };
         state.system.refresh_memory();
         let cpu = match cpu_times() {
@@ -99,9 +233,14 @@ impl SystemMeters {
                 percent(state.system.global_cpu_usage() as f64, 100.0)
             }
         };
+        let total = state.gpu.as_ref().map(|g| g.total);
+        let used = state.gpu.as_ref().and_then(|g| g.used());
         Meters {
             cpu,
             memory: percent(state.system.used_memory() as f64, state.system.total_memory() as f64),
+            vram: used.zip(total).map(|(u, t)| percent(u as f64, t as f64)),
+            vram_used: used,
+            vram_total: used.and(total),
         }
     }
 }
@@ -117,6 +256,33 @@ mod tests {
         assert_eq!(percent(5.0, 4.0), 100);
         assert_eq!(percent(1.0, 0.0), 0);
         assert_eq!(percent(f64::NAN, 1.0), 0);
+    }
+
+    #[test]
+    fn luid_prefix_matches_the_counter_instance_names() {
+        assert_eq!(luid_prefix(0, 0xD1A3), "luid_0x00000000_0x0000d1a3");
+        assert_eq!(luid_prefix(-1, 1), "luid_0xffffffff_0x00000001");
+    }
+
+    #[test]
+    fn vram_in_use_adds_only_the_chosen_card() {
+        let readings = [
+            ("luid_0x00000000_0x0000D1A3_phys_0", 3_000),
+            ("luid_0x00000000_0x0000D1A3_phys_1", 500),
+            ("luid_0x00000000_0x0000AAAA_phys_0", 9_999),
+        ];
+        assert_eq!(vram_in_use("luid_0x00000000_0x0000d1a3", readings), Some(3_500));
+        assert_eq!(vram_in_use("luid_0x00000000_0x0000bbbb", readings), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs a graphics card; run by hand: cargo test vram_reads -- --ignored --nocapture"]
+    fn vram_reads_on_this_computer() {
+        let meters = SystemMeters::default();
+        let m = meters.read();
+        println!("vram {:?}% used {:?} total {:?}", m.vram, m.vram_used, m.vram_total);
+        assert!(m.vram.is_some());
     }
 
     #[test]
