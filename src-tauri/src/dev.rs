@@ -159,7 +159,7 @@ fn wake(app: &AppHandle, store: &SettingsStore, hosts: &DevHosts, slot: usize, c
     let host = host(hosts, slot)?;
     let mut vars = env::session_env(settings.cli, &|name| key::load(name), &session::tools_folder(app), env::NodePlace::Last);
     if let Ok(dir) = app.path().resource_dir() {
-        vars.push(("CASTLE_STYLES".into(), dir.join("styles").display().to_string()));
+        vars.push(("CASTLE_STYLES".into(), crate::tree::plain_path(&dir.join("styles"))));
     }
     // the door (`castle-memory`) finds the companion's memory from any project folder by this
     if let Some(memory) = &settings.memory_folder {
