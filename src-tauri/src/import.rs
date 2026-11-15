@@ -346,7 +346,8 @@ fn collect_projects(folder: &Path, bundle: &mut Bundle) {
         let mut table: Option<Option<ProjectColumns>> = None;
         for (i, &line) in lines.iter().enumerate() {
             if let Some(heading) = line.strip_prefix("## ") {
-                archived = heading.to_lowercase().contains("archiv");
+                // the shelf is the heading's first word: "Active Projects (archiving monthly)" stays active
+                archived = heading.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase().starts_with("archiv");
                 table = None;
                 continue;
             }
@@ -714,9 +715,9 @@ mod tests {
         std::fs::write(
             root.join("projects/project-list.md"),
             format!(
-                "# Project List\n## Active Projects (1/10)\n| Pos | Project | Last Updated | Status |\n|-----|---------|--------------|--------|\n\
+                "# Project List\n## Active Projects (1/10, archiving monthly)\n| Pos | Project | Last Updated | Status |\n|-----|---------|--------------|--------|\n\
                  | #1 | [Garden planner](active/garden.md) · beta (v2) | 2026-11-08 | {status} |\n\n\
-                 ## Archived Projects (1)\n| Project | Archived | Reason |\n|---------|----------|--------|\n\
+                 ## 📦 Archived Projects (1)\n| Project | Archived | Reason |\n|---------|----------|--------|\n\
                  | [Old blog](archived/old-blog.md) | 2026-09-24 | Moved to the new site (see notes) |\n\n\
                  ## System Status\n| Metric | Value |\n|---|---|\n| Total | 2 |\n"
             ),
