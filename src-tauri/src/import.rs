@@ -1342,6 +1342,18 @@ mod tests {
         assert_eq!(crate::mirror::backfill_titles(&mut conn).unwrap(), 1);
         let history: Option<String> = conn.query_first("SELECT body FROM memory_file_history WHERE path = 'main/relationship-memory.md'").unwrap();
         assert_eq!(history.as_deref(), Some("# Rin\nlikes tea\n"));
+        // a file read only on demand leaves the wake, and stays on demand when it is saved again
+        let door = |conn: &mut Conn, line: &[&str]| crate::door::run(conn, &crate::door::parse(&line.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap(), &root);
+        assert_eq!(door(&mut conn, &["memory", "boot", "--path", "main/relationship-memory.md", "--at-boot", "no"]).unwrap(), "MEMORY main/relationship-memory.md is read on demand (memory show)");
+        crate::mirror::save_memory(&mut conn, "main/relationship-memory.md", "# Rin\nlikes coffee\n").unwrap();
+        crate::mirror::save_memory(&mut conn, "main/relationship-memory.md", "# Rin\nlikes coffee now\n").unwrap();
+        assert!(!crate::mirror::boot(&mut conn).unwrap().contains("===== main/relationship-memory.md ====="));
+        let list = door(&mut conn, &["memory", "list"]).unwrap();
+        assert!(list.contains("main/relationship-memory.md · 23 characters · on demand") && list.lines().last().unwrap().starts_with("AT BOOT "), "{list}");
+        assert!(door(&mut conn, &["memory", "boot", "--path", "main/relationship-memory.md", "--at-boot", "yes"]).unwrap().ends_with("at every boot"));
+        assert!(crate::mirror::boot(&mut conn).unwrap().contains("===== main/relationship-memory.md ====="));
+        assert!(door(&mut conn, &["memory", "boot", "--path", "main/nope.md", "--at-boot", "no"]).is_err());
+        assert!(door(&mut conn, &["memory", "boot", "--path", "main/current-session.md", "--at-boot", "no"]).is_err());
 
         // the skills: in the database, still on disk; a deleted file comes back, a hand edit is taken in
         let skill = root.join("plugins/rin-skills/skills/save-diary");
