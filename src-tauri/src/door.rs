@@ -971,7 +971,7 @@ mod tests {
 
         let file = folder.join("backup").join("memory.sql");
         let dumped = go(&["dump", "--to", file.to_str().unwrap()]).unwrap();
-        assert!(dumped.starts_with("DUMP 22 table(s), "), "{dumped}");
+        assert!(dumped.starts_with("DUMP 25 table(s), "), "{dumped}");
         let before = go(&["diary", "show", "--date", "2026-11-10"]).unwrap();
         drop(go);
         // the record of the note: sent once, read once
