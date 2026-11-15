@@ -198,6 +198,7 @@ pub fn run(conn: &mut Conn, ask: &Ask, memory: &Path) -> Result<String, String> 
         ["memory", "list"] => memory_list(conn),
         ["memory", "show"] => mirror::memory_file(conn, ask.need("path")?)?.ok_or_else(|| "No memory file with that path.".to_string()),
         ["memory", "save"] => memory_save(conn, ask),
+        ["memory", "boot"] => memory_boot(conn, ask),
         ["session", "show"] => session_show(conn, ask),
         ["session", "set"] => {
             let content = ask.text()?.ok_or("--file or --body is needed.")?;
@@ -731,11 +732,32 @@ fn memory_list(conn: &mut Conn) -> Result<String, String> {
     if rows.is_empty() {
         return Ok("MEMORY nothing in the database".into());
     }
-    Ok(rows
+    let at_boot: u64 = rows.iter().filter(|(_, _, boot, _)| boot.is_some()).map(|(_, _, _, len)| *len).sum();
+    let files = rows.iter().filter(|(_, _, boot, _)| boot.is_some()).count();
+    let heavy = if at_boot as usize > mirror::BOOT_BUDGET { format!(" - more than the {} a wake should carry", mirror::BOOT_BUDGET) } else { String::new() };
+    let mut lines: Vec<String> = rows
         .into_iter()
-        .map(|(path, title, boot, len)| format!("{} · {path} · {len} characters{}", title.unwrap_or_default(), if boot.is_some() { " · read at boot" } else { "" }))
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .map(|(path, title, boot, len)| format!("{} · {path} · {len} characters{}", title.unwrap_or_default(), if boot.is_some() { " · read at boot" } else { " · on demand" }))
+        .collect();
+    lines.push(format!("AT BOOT {files} file(s), {at_boot} characters (the session memory comes on top){heavy}"));
+    Ok(lines.join("\n"))
+}
+
+/// `memory boot --path <name> --at-boot yes|no`: read a file at every wake, or only on demand.
+fn memory_boot(conn: &mut Conn, ask: &Ask) -> Result<String, String> {
+    let path = ask.need("path")?;
+    let at_boot = match ask.need("at-boot")? {
+        "yes" => true,
+        "no" => false,
+        other => return Err(format!("--at-boot is yes or no, not {other}.")),
+    };
+    if mirror::is_session_file(path) {
+        return Err("The session memory is always read at boot.".into());
+    }
+    if !mirror::set_boot(conn, path, at_boot)? {
+        return Err(format!("No memory file {path}. `castle-memory memory list` shows them."));
+    }
+    Ok(format!("MEMORY {path} is read {}", if at_boot { "at every boot" } else { "on demand (memory show)" }))
 }
 
 fn memory_save(conn: &mut Conn, ask: &Ask) -> Result<String, String> {
