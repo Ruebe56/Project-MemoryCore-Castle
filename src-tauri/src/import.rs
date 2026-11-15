@@ -1407,12 +1407,12 @@ mod tests {
         assert!(root.join("daily-diary/current/2026-11-09.md").is_file());
 
         let count = |conn: &mut Conn, table: &str| -> u64 { conn.query_first(format!("SELECT COUNT(*) FROM {table}")).unwrap().unwrap() };
-        assert_eq!((count(&mut conn, "imported_files"), count(&mut conn, "diary_entries"), count(&mut conn, "reminders"), count(&mut conn, "projects"), count(&mut conn, "link_notes")), (16, 6, 3, 3, 0));
+        assert_eq!((count(&mut conn, "imported_files"), count(&mut conn, "diary_entries"), count(&mut conn, "reminders"), count(&mut conn, "projects"), count(&mut conn, "link_notes")), (17, 6, 3, 3, 0));
         // a memory moved in before Castle knew the placeholder: the row goes, the kept file stays
         conn.exec_drop("INSERT INTO diary_entries (session_no, title, body, source_file) VALUES (9, 'x', ?, 'daily-diary/Daily-Diary-002.md')", (before.body_of("daily-diary/Daily-Diary-002.md").unwrap(),)).unwrap();
         assert_eq!(drop_placeholder_entries(&mut conn).unwrap(), 1);
         assert_eq!(drop_placeholder_entries(&mut conn).unwrap(), 0);
-        assert_eq!((count(&mut conn, "imported_files"), count(&mut conn, "diary_entries")), (16, 6));
+        assert_eq!((count(&mut conn, "imported_files"), count(&mut conn, "diary_entries")), (17, 6));
         let body: Option<String> = conn.query_first("SELECT body FROM diary_entries WHERE source_file LIKE '%/diary-1.md'").unwrap();
         assert_eq!(body.as_deref(), Some("# Diary\r\n\r\n## Morning - The clinic moved\r\nRows now.\r\n"));
 
