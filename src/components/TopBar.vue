@@ -111,6 +111,14 @@ function onKey(event, id) {
   const to = neighbourOf(props.tabs.map((t) => t.id), id, event.key === 'ArrowLeft' ? -1 : 1)
   if (to) emit('reorder', { from: id, to })
 }
+// When the tabs are wider than the window the bar scrolls sideways with its scrollbar hidden, so an
+// ordinary mouse wheel could never reach the last tabs. Turn a vertical wheel into a sideways scroll.
+function onWheel(event) {
+  const bar = event.currentTarget
+  if (bar.scrollWidth <= bar.clientWidth || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return
+  event.preventDefault()
+  bar.scrollLeft += event.deltaY
+}
 onBeforeUnmount(stopListening)
 </script>
 
@@ -118,7 +126,7 @@ onBeforeUnmount(stopListening)
   <!-- the bar's empty space moves the window (the free layout); tabs and buttons keep their clicks -->
   <header class="top-bar" data-tauri-drag-region>
     <span class="title" data-tauri-drag-region><span class="gem">◆</span> MEMORYCORE<span v-if="version" class="version" :title="`MemoryCore Castle ${version}`">v{{ version }}</span></span>
-    <nav class="tabs" :class="{ sorting: dragging }">
+    <nav class="tabs" :class="{ sorting: dragging }" @wheel="onWheel">
       <button
         v-for="tab in tabs"
         :key="tab.id"
