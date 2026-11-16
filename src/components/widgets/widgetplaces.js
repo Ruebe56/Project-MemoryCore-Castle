@@ -16,6 +16,7 @@ export const WIDGETS = [
   { id: 'credit-seedance', name: 'Seedance', about: "This month's Seedance spend on BytePlus, for videos. Shown once its key is saved.", key: 'seedance' },
   { id: 'credit-suno', name: 'Suno', about: 'Your Suno credits, for songs. Shown once its key is saved.', key: 'suno' },
   { id: 'credit-elevenlabs', name: 'ElevenLabs', about: 'The characters left on your ElevenLabs plan, for voices. Shown once its key is saved.', key: 'elevenlabs' },
+  { id: 'feeds', name: 'Feeds', about: 'Status lists your companion keeps in feeds/*.json.' },
 ]
 
 // A credit widget shows only once its key is saved in Settings > Keys; `keys` lists the saved ones.
