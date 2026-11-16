@@ -236,7 +236,8 @@ circle {
 }
 
 .fill.gpu {
-  stroke: var(--accent-3, #b9a2ff);
+  /* the same colour as memory unless the theme names a third accent */
+  stroke: var(--accent-3, var(--accent-2, #8cc8ff));
 }
 
 .fill.hot {

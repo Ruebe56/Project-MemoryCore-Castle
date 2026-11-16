@@ -129,6 +129,8 @@ export const chatMarkupSave = (original, picture, previous = null) => invoke('ch
 export const memoryFeatures = () => invoke('memory_features')
 // Everything HOME shows. today = the member's local date (YYYY-MM-DD). -> { features, reminders, projects, diary, growth } or null
 export const memoryHome = (today) => invoke('memory_home', { today })
+export const memoryFeeds = () => invoke('memory_feeds')
+export const feedSwitch = (feed, id, on) => invoke('feed_switch', { feed, id, on })
 // A room's shelves (room: diary | projects | library) -> [{ name, pages: [{ title, file, date }] }]
 export const memoryShelves = (room) => invoke('memory_shelves', { room })
 // LIBRARY: the member's own books (memory database) and the Spiral Library (the Portfolio, read-only)
