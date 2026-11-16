@@ -16,6 +16,7 @@ import ModalSheet from './components/ModalSheet.vue'
 import BackupPanel from './components/BackupPanel.vue'
 import AppsView from './views/AppsView.vue'
 import WidgetsView from './views/WidgetsView.vue'
+import FeedsWidget from './components/widgets/FeedsWidget.vue'
 import MyProfileView from './views/myprofile/MyProfileView.vue'
 import MemoryRoom from './views/MemoryRoom.vue'
 import LibraryView from './views/LibraryView.vue'
@@ -511,6 +512,7 @@ watch(settingsStamp, () => {
           <GaugeWidget v-else-if="id === 'gauges'" />
           <UsageWidget v-else-if="id === 'usage'" :stamp="settingsStamp" />
           <CreditWidget v-else-if="isCreditWidget(id)" :widget="id" />
+          <FeedsWidget v-else-if="id === 'feeds'" />
           <HomeCards v-else :kind="id" :data="home" :backup="backup" :database="database" @open="openMemoryFile" @backup="onBackupCard" @database="onDatabaseCard" />
         </div>
         <div v-if="arranging" class="arrange-bar" role="toolbar" aria-label="Arrange HOME">

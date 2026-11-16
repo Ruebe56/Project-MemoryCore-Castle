@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBlocks, parseSpans } from './markdown.js'
+import { hideComments, parseBlocks, parseSpans } from './markdown.js'
 
 describe('parseBlocks', () => {
   it('draws a table with its header and rows', () => {
@@ -54,5 +54,31 @@ describe('parseSpans', () => {
 
   it('never turns markup into HTML', () => {
     expect(parseSpans('<img src=x onerror=alert(1)>')).toEqual([{ text: '<img src=x onerror=alert(1)>' }])
+  })
+})
+
+describe('hideComments', () => {
+  it('hides a spoken-line marker at the end of a reply', () => {
+    const blocks = parseBlocks('It works.\n\n<!--speak: [calm]It works now.-->')
+    expect(blocks).toEqual([{ kind: 'p', text: 'It works.' }])
+  })
+
+  it('hides a comment in the middle of a line and one across lines', () => {
+    expect(hideComments('Hi there <!--speak: hello --> end')).toBe('Hi there  end')
+    expect(hideComments('a\n<!-- one\ntwo -->\nb')).toBe('a\n\nb')
+  })
+
+  it('hides a comment still open while the reply streams in', () => {
+    expect(hideComments('Done. <!--speak: [calm]Do')).toBe('Done. ')
+  })
+
+  it('keeps comments inside code blocks and inline code', () => {
+    const text = 'Use `<!-- -->` to mark it.\n```html\n<!-- kept -->\n```\nafter <!--x--> end'
+    expect(hideComments(text)).toBe('Use `<!-- -->` to mark it.\n```html\n<!-- kept -->\n```\nafter  end')
+  })
+
+  it('leaves text without comments unchanged', () => {
+    const text = '# Title\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |'
+    expect(hideComments(text)).toBe(text)
   })
 })

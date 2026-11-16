@@ -213,7 +213,8 @@ circle {
 }
 
 .fill.vram {
-  stroke: var(--accent-3, #b89cff);
+  /* the same colour as memory unless the theme names a third accent */
+  stroke: var(--accent-3, var(--accent-2, #8cc8ff));
 }
 
 .gauge-col {

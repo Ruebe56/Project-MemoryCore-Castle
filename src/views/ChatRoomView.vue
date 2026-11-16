@@ -882,6 +882,9 @@ li.online .dot, li.here .dot, li.active .dot {
 /* 12 rows (22px face + 6px row gap each) before the room's own scrollbar takes over, so a busy
    room scrolls in place instead of pushing the switches and YOUR PROFILE further down the sidebar */
 .roster.scrolls {
+  /* the sidebar is a flex column: a scrolling list may otherwise shrink to a row or two to make
+     room for everything below it (13 people did that) - keep its 12 rows, the sidebar scrolls */
+  flex-shrink: 0;
   max-height: calc(12 * 28px - 6px);
   overflow-y: auto;
   padding-right: 4px;
