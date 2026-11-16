@@ -5,7 +5,7 @@ describe('HOME widgets as the member arranges them', () => {
   it('lists every widget the themes place', () => {
     expect(WIDGETS.map((w) => w.id)).toEqual([
       'clock', 'gauges', 'weather', 'sweep', 'usage', 'today', 'projects', 'diary', 'growth', 'backup', 'database',
-      'credit-openai', 'credit-seedance', 'credit-suno', 'credit-elevenlabs',
+      'credit-openai', 'credit-seedance', 'credit-suno', 'credit-elevenlabs', 'feeds',
     ])
   })
 

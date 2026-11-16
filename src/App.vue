@@ -23,6 +23,7 @@ import { loaderBegin, loaderDone, loaderEnd, loaderExpect, loaderRemember } from
 import ModalSheet from './components/ModalSheet.vue'
 import BackupPanel from './components/BackupPanel.vue'
 import AppsView from './views/AppsView.vue'
+import FeedsWidget from './components/widgets/FeedsWidget.vue'
 import MyProfileView from './views/myprofile/MyProfileView.vue'
 import MemoryRoom from './views/MemoryRoom.vue'
 import LibraryView from './views/LibraryView.vue'
@@ -580,6 +581,7 @@ watch(settingsStamp, () => {
           <SweepWidget v-else-if="id === 'sweep'" :theme-look="theme?.sweep?.look ?? ''" />
           <UsageWidget v-else-if="id === 'usage'" :stamp="settingsStamp" />
           <CreditWidget v-else-if="isCreditWidget(id)" :widget="id" />
+          <FeedsWidget v-else-if="id === 'feeds'" />
           <HomeCards v-else :kind="id" :data="home" :backup="backup" :database="database" @open="openMemoryFile" @backup="onBackupCard" @database="onDatabaseCard" />
         </div>
         <button v-if="!arranging" class="manage-widgets" @click="openSettings('widgets')">Manage widgets</button>
