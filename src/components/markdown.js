@@ -20,13 +20,45 @@ function cells(line) {
     .map((cell) => cell.replace(/\\\|/g, '|').trim())
 }
 
+// An HTML comment, or an inline code span (kept, so a comment written about inside backticks still
+// shows). A comment still open at the end - a reply arriving word by word - is hidden too.
+const COMMENT_OR_CODE = /(`+)[^\n]*?\1|<!--[\s\S]*?(?:-->|$)/g
+
+/**
+ * The text without its HTML comments (`<!-- ... -->`), which are notes for tools - such as a line
+ * the companion marked to be spoken - and never meant to be read. Code blocks and inline code
+ * are left exactly as they are.
+ */
+export function hideComments(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n')
+  const out = []
+  let prose = []
+  const flush = () => {
+    if (prose.length) out.push(prose.join('\n').replace(COMMENT_OR_CODE, (m, ticks) => (ticks ? m : '')))
+    prose = []
+  }
+  for (let i = 0; i < lines.length; i += 1) {
+    if (FENCE.test(lines[i])) {
+      flush()
+      out.push(lines[i])
+      i += 1
+      while (i < lines.length && !FENCE.test(lines[i])) out.push(lines[i++])
+      if (i < lines.length) out.push(lines[i])
+      continue
+    }
+    prose.push(lines[i])
+  }
+  flush()
+  return out.join('\n')
+}
+
 /**
  * Blocks: { kind: 'p' | 'h1'..'h4' | 'item' | 'quote' | 'rule' | 'code' | 'table', ... }.
  * Consecutive plain lines join into one paragraph (line breaks kept); a table needs a header row
- * followed by a |---| rule.
+ * followed by a |---| rule. HTML comments are hidden first (hideComments).
  */
 export function parseBlocks(text) {
-  const lines = String(text ?? '').replace(/\r/g, '').split('\n')
+  const lines = hideComments(text).split('\n')
   const out = []
   let paragraph = null
   const close = () => {

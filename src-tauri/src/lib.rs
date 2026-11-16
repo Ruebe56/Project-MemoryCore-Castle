@@ -38,6 +38,7 @@ mod door_look;
 mod door_library;
 mod emotion;
 mod env;
+mod feeds;
 mod os;
 mod files;
 mod git;
@@ -596,6 +597,8 @@ pub fn run() {
             commands::memory_features,
             memory::memory_home,
             store::home_reminder_done,
+            feeds::memory_feeds,
+            feeds::feed_switch,
             memory::memory_shelves,
             memory::memory_read,
             theme::theme_create,

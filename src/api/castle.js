@@ -234,6 +234,8 @@ export const memoryFeatures = () => invoke('memory_features')
 export const memoryHome = (today) => invoke('memory_home', { today })
 // HOME's TODAY card: tick a reminder (done = true) or Undo it (done = false). Database memories only.
 export const homeReminderDone = (id, done) => invoke('home_reminder_done', { id, done })
+export const memoryFeeds = () => invoke('memory_feeds')
+export const feedSwitch = (feed, id, on) => invoke('feed_switch', { feed, id, on })
 // A room's shelves (room: diary | projects | library) -> [{ name, pages: [{ title, file, date }] }]
 export const memoryShelves = (room) => invoke('memory_shelves', { room })
 // LIBRARY: the member's own books (memory database) and the Spiral Library (the Portfolio, read-only)
