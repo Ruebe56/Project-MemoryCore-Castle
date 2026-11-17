@@ -137,6 +137,7 @@ mod tray;
 mod unstick;
 mod vault;
 mod update;
+mod voice_inbox;
 mod world;
 mod worlds;
 
@@ -1014,6 +1015,8 @@ pub fn run() {
             std::thread::spawn(providers::codex_chatgpt_cached);
             providers::start_images(app.handle());
             messages::start(app.handle());
+            // speech (or another local helper) drops text in <memory>/inbox/voice; sent as Chat sends
+            voice_inbox::start(app.handle());
             world::restore(app.handle());
             world::watch_covered(app.handle());
             roomread::start(app.handle());
