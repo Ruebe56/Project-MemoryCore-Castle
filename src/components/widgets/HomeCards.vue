@@ -99,6 +99,7 @@ function due(date) {
 .card {
   padding: 14px 18px;
   box-sizing: border-box;
+  min-width: 0;
 }
 h3 {
   margin: 0 0 10px;
@@ -114,6 +115,9 @@ h3 {
 }
 ul {
   display: grid;
+  /* minmax(0, 1fr): a grid row is otherwise as wide as its longest line, and a long reminder
+     title then pushes past the card instead of ending in "…". */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -173,6 +177,8 @@ li,
   margin: 0 0 6px;
   font-size: 13px;
   color: var(--text-dim);
+  /* a database name like alice_carried_across_all_platforms_memorycoredb has no spaces to wrap at */
+  overflow-wrap: anywhere;
 }
 .growth-line {
   display: flex;
