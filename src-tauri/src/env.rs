@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(get(&vars, "ARK_API_KEY"), None);
         assert_eq!(get(&vars, "CASTLE_TOOLS"), Some("C:\\tools"));
         // the resource folder Tauri resolves can carry \\?\, which cmd.exe cannot start a script from
-        let vars = session_env(Cli::Claude, &keys(&[]), Path::new(r"\\?\D:\Castle\tools"));
+        let vars = session_env(Cli::Claude, &keys(&[]), Path::new(r"\\?\D:\Castle\tools"), NodePlace::First);
         assert_eq!(get(&vars, "CASTLE_TOOLS"), Some(r"D:\Castle\tools"));
     }
 
