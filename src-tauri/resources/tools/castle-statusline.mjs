@@ -13,6 +13,8 @@
 // own, so it starts fast.
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 /** Rounds half to even, as .NET's Math.Round does. */
 function roundEven(value, digits = 0) {
@@ -96,9 +98,47 @@ function transcriptTokens(file) {
   return null;
 }
 
+// alice-fixes (2026-11-18): Claude Code hands this script the plan's own limits (rate_limits:
+// five_hour and seven_day, used % and reset time) and the exact context size. Alice Pocket shows
+// them on the phone, so the numbers - only the numbers - are also kept in a small file per session:
+//   <CASTLE_LIMITS_DIR or %TEMP%/castle-statusline>/<session_id>.json
+// No token, no transcript text, nothing personal. Writing it can never change or break the line.
+function windowOf(w) {
+  if (!w || typeof w !== 'object') return null;
+  const used = Number(w.used_percentage);
+  const resets = Number(w.resets_at);
+  if (!Number.isFinite(used)) return null;
+  return { used_percentage: Math.max(0, Math.min(100, used)), resets_at: Number.isFinite(resets) ? resets : null };
+}
+
+function saveLimits(j, contextPercent, contextSize, contextTokens) {
+  try {
+    const id = String((j && j.session_id) || '');
+    if (!/^[A-Za-z0-9-]{8,80}$/.test(id)) return;
+    const dir = process.env.CASTLE_LIMITS_DIR || path.join(os.tmpdir(), 'castle-statusline');
+    fs.mkdirSync(dir, { recursive: true });
+    const limits = (j && j.rate_limits) || {};
+    const out = {
+      at: Math.floor(Date.now() / 1000),
+      model: (j.model && (j.model.id || j.model.display_name)) || null,
+      context: { used_percentage: contextPercent, size: contextSize, tokens: contextTokens },
+      five_hour: windowOf(limits.five_hour),
+      seven_day: windowOf(limits.seven_day),
+    };
+    const file = path.join(dir, id + '.json');
+    const tmp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(out));
+    fs.renameSync(tmp, file);
+  } catch {
+    // the status line matters more than this file
+  }
+}
+
 let model = 'Claude';
 let percent = '--';
 let tokens_ = '--';
+let parsed = null;
+let ctx = { percent: null, size: null, tokens: null };
 try {
   let raw = '';
   try {
@@ -107,6 +147,7 @@ try {
     raw = '';
   }
   const j = JSON.parse(raw);
+  parsed = j;
   const m = (j && j.model) || {};
   if (m.display_name) model = String(m.display_name);
   else if (m.id) model = String(m.id);
@@ -134,9 +175,11 @@ try {
     tokens = 0;
   }
   tokens_ = tokenText(tokens);
+  ctx = { percent: Number(percent), size, tokens };
 } catch {
   percent = '--';
   tokens_ = '--';
 }
 
 process.stdout.write(`${model} | ${percent}% | ${tokens_} tokens\n`);
+if (parsed) saveLimits(parsed, Number.isFinite(ctx.percent) ? ctx.percent : null, ctx.size, ctx.tokens);

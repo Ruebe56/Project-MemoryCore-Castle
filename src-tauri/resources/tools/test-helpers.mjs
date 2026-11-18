@@ -334,6 +334,24 @@ const parse = (t) => {
   ];
   const want = ['Opus | 21% | 42k tokens', 'Opus | 4% | 42k tokens', 'Sonnet | 42% | 84.8k tokens', 'Sonnet | 0% | 0 tokens', 'Claude | --% | -- tokens'];
   report(JSON.stringify(got) === JSON.stringify(want), 'statusline: model, percent and tokens as session.rs expects', JSON.stringify(got));
+
+  // alice-fixes: the plan's limits are kept per session, numbers only, and never change the line
+  const limitsDir = path.join(root, 'limits');
+  const withLimits = {
+    session_id: 'abcd1234-ef56-7890-abcd-1234567890ab', model: { id: 'claude-opus-5-5', display_name: 'Opus' },
+    context_window: { used_percentage: 51, context_window_size: 1000000 },
+    rate_limits: { five_hour: { used_percentage: 23.5, resets_at: 1795000000 }, seven_day: { used_percentage: 71, resets_at: 1795400000 } },
+    transcript_path: transcript,
+  };
+  const lineOut = (await run('castle-statusline.mjs', [], { CASTLE_LIMITS_DIR: limitsDir }, { stdin: JSON.stringify(withLimits) })).out;
+  let kept = null;
+  try { kept = JSON.parse(fs.readFileSync(path.join(limitsDir, withLimits.session_id + '.json'), 'utf8')); } catch {}
+  report(lineOut === 'Opus | 51% | 42k tokens' && kept && kept.context.used_percentage === 51 && kept.five_hour.used_percentage === 23.5 && kept.seven_day.resets_at === 1795400000
+    && kept.context.size === 1000000 && !('transcript_path' in kept) && !JSON.stringify(kept).includes(transcript),
+    'statusline: limits kept per session, numbers only, line unchanged', JSON.stringify([lineOut, kept]));
+  await run('castle-statusline.mjs', [], { CASTLE_LIMITS_DIR: limitsDir }, { stdin: JSON.stringify({ session_id: '../../evil', model: { display_name: 'X' } }) });
+  report(!fs.existsSync(path.join(root, 'evil.json')) && fs.readdirSync(limitsDir).length === 1,
+    'statusline: a strange session id writes nothing', fs.readdirSync(limitsDir).join(','));
 }
 
 // 8) Unit checks on the shared functions.
