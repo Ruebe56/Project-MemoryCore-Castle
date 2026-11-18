@@ -94,6 +94,7 @@ mod tree;
 mod transcript;
 mod tray;
 mod update;
+mod control_inbox;
 mod voice_inbox;
 mod world;
 mod worlds;
@@ -695,6 +696,8 @@ pub fn run() {
             messages::start(app.handle());
             // speech (or another local helper) drops text in <memory>/inbox/voice; sent as Chat sends
             voice_inbox::start(app.handle());
+            // Alice Pocket's Stop: <memory>/inbox/control/stop-*.txt presses Esc once (alice-fixes)
+            control_inbox::start(app.handle());
             world::restore(app.handle());
             world::watch_covered(app.handle());
             roomread::start(app.handle());
