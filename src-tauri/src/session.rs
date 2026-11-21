@@ -205,8 +205,12 @@ pub fn session_settings_file(store: &SettingsStore) -> PathBuf {
 /// The command Claude Code runs for the status line: Castle's script, which prints
 /// `<model> | NN% | 123.4k tokens` so Chat can show how full the context is (the personal status
 /// line is left out with the rest of the personal setup).
+/// alice-fixes (2026-11-21): the script goes over without the `\\?\` prefix the resolved resource
+/// folder can carry - Node cannot start a main script from such a path (EISDIR on `D:`), so the
+/// line, and the limits file beside it, were never written.
 pub fn status_line_command(tools: &Path) -> String {
-    format!("\"{}\" \"{}\"", crate::env::node().display(), tools.join(STATUS_LINE_SCRIPT).display())
+    let script = crate::tree::plain_path(&tools.join(STATUS_LINE_SCRIPT));
+    format!("\"{}\" \"{script}\"", crate::env::node().display())
 }
 
 /// The settings file's text: the status line, and the member's own voice setting when they have one.
@@ -690,7 +694,7 @@ mod tests {
 
         // the file holds only the status line, pointing at the script among the tools
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        let script = tools.join(STATUS_LINE_SCRIPT).display().to_string();
+        let script = crate::tree::plain_path(&tools.join(STATUS_LINE_SCRIPT));
         assert_eq!(written["statusLine"]["type"], "command");
         assert_eq!(written["statusLine"]["command"], format!("\"{}\" \"{script}\"", crate::env::node().display()));
         // beside it only the member's own voice setting, if they have one on this computer
@@ -835,6 +839,15 @@ MEMORY_DB_PASSWORD=x
         assert_eq!(opening_prompt(Room::Main, Some(false)), None, "a wake Castle does itself");
         assert_eq!(opening_prompt(Room::Main, None), None, "no answer means no greeting");
         assert_eq!(opening_prompt(Room::Story, Some(true)), None, "the STORY room has its own opening");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn the_status_line_script_goes_over_without_the_verbatim_prefix() {
+        // Node cannot start a main script from a \\?\ path (EISDIR on `D:`): the line never ran
+        let command = status_line_command(Path::new(r"\\?\D:\Castle\tools"));
+        assert!(!command.contains(r"\\?\"), "{command}");
+        assert!(command.ends_with(&format!("\"D:\\Castle\\tools\\{STATUS_LINE_SCRIPT}\"")), "{command}");
     }
 
     #[test]
