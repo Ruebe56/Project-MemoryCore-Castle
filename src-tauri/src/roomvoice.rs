@@ -4,6 +4,10 @@
 //! posted as one voice line (the words and the voice together) with the companion's room key.
 //! Speaking runs on its own thread, one at a time; when a voice cannot be made or the room
 //! refuses it, the words are posted as plain text, so the line is never lost.
+//!
+//! The voice can instead be made on this computer (Settings > Chat > Voice made by: "local"): a
+//! voice server at http://127.0.0.1:8760 answers POST /mp3 {"text"} with the mp3 bytes. No key is
+//! needed; while that server is not running, the companion is simply not offered a voice.
 
 use crate::chatroom::{check_voice, Room};
 use crate::roomdraw::{left_today, Day};
@@ -24,6 +28,30 @@ static SPEAKING: AtomicBool = AtomicBool::new(false);
 
 fn has_eleven_key() -> bool {
     crate::key::load("elevenlabs").is_some()
+}
+
+/// The voice server on this computer that makes a local room voice. Loopback only, by design.
+pub const LOCAL_VOICE_BASE: &str = "http://127.0.0.1:8760";
+
+/// Whether the member chose the voice made on this computer. Pure, tested.
+pub fn uses_local(settings: &Settings) -> bool {
+    settings.room_voice_engine == "local"
+}
+
+/// The local voice server answers its health check (a short wait, never long enough to slow a turn).
+fn local_up() -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build()
+        .ok()
+        .and_then(|c| c.get(format!("{LOCAL_VOICE_BASE}/health")).send().ok())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// A voice can be made right now: the ElevenLabs key is saved, or the local server is running.
+fn can_make_voice(settings: &Settings) -> bool {
+    if uses_local(settings) { local_up() } else { has_eleven_key() }
 }
 
 /// The voice to speak in: the member's choice, or the default. Pure, tested.
@@ -72,7 +100,7 @@ pub fn member_left(on: bool, has_key: bool, speaking: bool, day: &Day, today: &s
 /// answer leaves none).
 pub fn voices_left(settings: &Settings, store: &SettingsStore, ai_room: &Room) -> u32 {
     let day = read_day(&crate::roomturn::room_folder(store));
-    let mine = member_left(settings.room_voices_on, has_eleven_key(), SPEAKING.load(Ordering::Relaxed), &day, &today(), settings.room_voices_per_day);
+    let mine = member_left(settings.room_voices_on, can_make_voice(settings), SPEAKING.load(Ordering::Relaxed), &day, &today(), settings.room_voices_per_day);
     if mine == 0 {
         return 0;
     }
@@ -98,6 +126,25 @@ fn eleven_speak(key: &str, voice: &str, text: &str) -> Result<Vec<u8>, String> {
         return Err(format!("ElevenLabs said ({status}): {}", said.chars().take(200).collect::<String>()));
     }
     let bytes = answer.bytes().map_err(|_| "ElevenLabs' voice could not be read.".to_string())?.to_vec();
+    check_voice(&bytes).map_err(|no| no.message)?;
+    Ok(bytes)
+}
+
+/// Makes the voice on this computer: the local server renders the words and answers with an mp3.
+fn local_speak(text: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(90)).build().map_err(|_| "The voice could not start.".to_string())?;
+    let answer = client
+        .post(format!("{LOCAL_VOICE_BASE}/mp3"))
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .map_err(|_| "the voice server on this computer is not running".to_string())?;
+    let status = answer.status().as_u16();
+    if !(200..300).contains(&status) {
+        let body: Value = answer.json().unwrap_or(Value::Null);
+        let said = body.get("error").and_then(Value::as_str).unwrap_or("the request was refused");
+        return Err(format!("the local voice said ({status}): {}", said.chars().take(200).collect::<String>()));
+    }
+    let bytes = answer.bytes().map_err(|_| "the local voice could not be read".to_string())?.to_vec();
     check_voice(&bytes).map_err(|no| no.message)?;
     Ok(bytes)
 }
@@ -144,8 +191,15 @@ fn post_text(_folder: &Path, words: &str, why: &str) -> String {
 
 fn speak_now(app: &AppHandle, folder: &Path, words: &str) -> String {
     let settings = app.state::<SettingsStore>().get();
-    let Some(key) = crate::key::load("elevenlabs") else { return post_text(folder, words, "the ElevenLabs key is gone") };
-    let bytes = match eleven_speak(&key, voice_for(&settings), words) {
+    let made = if uses_local(&settings) {
+        local_speak(words)
+    } else {
+        match crate::key::load("elevenlabs") {
+            Some(key) => eleven_speak(&key, voice_for(&settings), words),
+            None => Err("the ElevenLabs key is gone".to_string()),
+        }
+    };
+    let bytes = match made {
         Ok(b) => b,
         Err(why) => return post_text(folder, words, &why),
     };
@@ -169,6 +223,10 @@ fn speak_now(app: &AppHandle, folder: &Path, words: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct VoicesStatus {
     has_key: bool,
+    /// "elevenlabs" or "local"
+    engine: String,
+    /// the local voice server answers (checked only while "local" is chosen)
+    local_up: bool,
     used_today: u32,
     limit: u32,
     /// the room's own cap and count for this companion; None while it is not in the room or the
@@ -183,7 +241,9 @@ pub async fn room_voices_status(store: tauri::State<'_, SettingsStore>) -> Resul
     let day = read_day(&crate::roomturn::room_folder(&store));
     let used_today = if day.date == today() { day.count } else { 0 };
     let room = tauri::async_runtime::spawn_blocking(|| ai_room().and_then(|room| room.voice_day())).await.unwrap_or(None);
-    Ok(VoicesStatus { has_key: has_eleven_key(), used_today, limit: settings.room_voices_per_day, room_cap: room.map(|r| r.0), room_today: room.map(|r| r.1) })
+    let local = uses_local(&settings);
+    let local_up = local && tauri::async_runtime::spawn_blocking(local_up).await.unwrap_or(false);
+    Ok(VoicesStatus { has_key: has_eleven_key(), engine: settings.room_voice_engine.clone(), local_up, used_today, limit: settings.room_voices_per_day, room_cap: room.map(|r| r.0), room_today: room.map(|r| r.1) })
 }
 
 #[cfg(test)]
@@ -207,6 +267,15 @@ mod tests {
         assert_eq!(speakable("   "), None);
         assert_eq!(speakable(&"a".repeat(SPEAK_TEXT_MAX)).map(str::len), Some(SPEAK_TEXT_MAX));
         assert_eq!(speakable(&"a".repeat(SPEAK_TEXT_MAX + 1)), None, "a long say goes as text");
+    }
+
+    #[test]
+    fn the_local_voice_is_used_only_when_chosen() {
+        let mut settings = Settings::default();
+        assert!(!uses_local(&settings), "ElevenLabs stays the default");
+        settings.room_voice_engine = "local".into();
+        assert!(uses_local(&settings));
+        assert!(LOCAL_VOICE_BASE.starts_with("http://127.0.0.1:"), "the local voice never leaves this computer");
     }
 
     #[test]

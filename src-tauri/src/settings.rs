@@ -339,6 +339,10 @@ pub struct Settings {
     pub room_voices_on: bool,
     pub room_voices_per_day: u32,
     pub room_voice_id: Option<String>,
+    /// What makes the room voice: "elevenlabs" (the member's key, the default) or "local" (a voice
+    /// server on this computer at http://127.0.0.1:8760 that answers POST /mp3 with the mp3 bytes;
+    /// nothing leaves the computer until the room line is posted).
+    pub room_voice_engine: String,
     /// The companion brings its life into the chat room: a shelf of notes it chose, in private,
     /// from its diary and the rest of its memory (off by default; roomshelf.rs).
     pub room_shelf_on: bool,
@@ -655,6 +659,7 @@ impl Default for Settings {
             room_voices_on: false,
             room_voices_per_day: 2,
             room_voice_id: None,
+            room_voice_engine: "elevenlabs".into(),
             room_shelf_on: false,
             daily_mood_on: true,
             keeper_speaks: true,
@@ -762,6 +767,7 @@ impl Settings {
         self.room_voices_per_day = self.room_voices_per_day.min(5);
         // an ElevenLabs voice id is letters and digits; anything else is no choice (the default voice)
         self.room_voice_id = self.room_voice_id.take().map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric()));
+        if !["elevenlabs", "local"].contains(&self.room_voice_engine.as_str()) { self.room_voice_engine = "elevenlabs".into(); }
         fn clean(value: Option<String>) -> Option<String> {
             value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
         }
@@ -1227,6 +1233,11 @@ mod tests {
         assert_eq!((wild.room_voices_per_day, wild.room_voice_id.as_deref()), (5, None), "never more than 5 a day; an id that is not letters and digits is no choice");
         let chosen: Settings = serde_json::from_str::<Settings>(r#"{"roomVoiceId":" 21m00Tcm4TlvDq8ikWAM "}"#).unwrap().normalized();
         assert_eq!(chosen.room_voice_id.as_deref(), Some("21m00Tcm4TlvDq8ikWAM"));
+        assert_eq!(old.room_voice_engine, "elevenlabs", "an older file keeps ElevenLabs");
+        let local: Settings = serde_json::from_str::<Settings>(r#"{"roomVoiceEngine":"local"}"#).unwrap().normalized();
+        assert_eq!(local.room_voice_engine, "local");
+        let odd: Settings = serde_json::from_str::<Settings>(r#"{"roomVoiceEngine":"http://evil"}"#).unwrap().normalized();
+        assert_eq!(odd.room_voice_engine, "elevenlabs", "anything else is the default");
     }
 
     #[test]
@@ -1289,6 +1300,7 @@ mod tests {
             room_voices_on: true,
             room_voices_per_day: 4,
             room_voice_id: Some("21m00Tcm4TlvDq8ikWAM".into()),
+            room_voice_engine: "local".into(),
             room_shelf_on: true,
             daily_mood_on: false,
             keeper_speaks: false,

@@ -61,7 +61,9 @@ async function saveVoices(row, patch) {
   await saveRow(row, patch)
   await loadVoices()
 }
-const canSpeak = computed(() => !roomLocked.value && !(voices.value && !voices.value.hasKey))
+// The voice is made with the ElevenLabs key, or by a voice server on this computer ("local")
+const localVoice = computed(() => valueOf(settings.value, 'roomVoiceEngine') === 'local')
+const canSpeak = computed(() => !roomLocked.value && (localVoice.value || !(voices.value && !voices.value.hasKey)))
 const speaking = computed(() => canSpeak.value && valueOf(settings.value, 'roomVoicesOn'))
 
 // The companion's life in the room: the shelf of notes it chose from its memory
@@ -264,15 +266,20 @@ onMounted(async () => {
     <SettingRow id="voices-on" :label="`Let ${companionLabel} speak`" :disabled="!canSpeak">
       <template #description>
         <template v-if="roomLocked">Needs {{ companionLabel }} in the room first.</template>
-        <template v-else-if="voices && !voices.hasKey">Needs an ElevenLabs key. <a href="#" @click.prevent="go('keys#key-elevenlabs')">Add one in Keys</a></template>
+        <template v-else-if="localVoice && voices && !voices.localUp">Speaks with the voice server on this computer, which is not running right now. Lines go as text until it is.</template>
+        <template v-else-if="localVoice">Speaks with the voice server on this computer. Free, and nothing leaves it until the line is posted.</template>
+        <template v-else-if="voices && !voices.hasKey">Needs an ElevenLabs key. <a href="#" @click.prevent="go('keys#key-elevenlabs')">Add one in Keys</a>, or choose the voice made on this computer below.</template>
         <template v-else>Speaks with your ElevenLabs key, billed by the characters spoken.</template>
       </template>
       <SettingSwitch :model-value="valueOf(settings, 'roomVoicesOn')" :label="`Let ${companionLabel} speak`" :disabled="locked || !canSpeak" @update:model-value="(on) => saveVoices('voices-on', { roomVoicesOn: on })" />
     </SettingRow>
+    <SettingRow id="voice-engine" label="Voice made by" :disabled="roomLocked" description="ElevenLabs with your key, or a voice server on this computer (127.0.0.1:8760, POST /mp3)." tip="This computer: a voice server you run yourself on port 8760 renders the line and hands back an mp3. No key and no cost; while it is not running, lines go as text.">
+      <SettingChoice :model-value="localVoice ? 'local' : 'elevenlabs'" :options="[{ value: 'elevenlabs', label: 'ElevenLabs' }, { value: 'local', label: 'This computer' }]" label="Voice made by" :disabled="locked || roomLocked" @update:model-value="(e) => saveVoices('voice-engine', { roomVoiceEngine: e })" />
+    </SettingRow>
     <SettingRow id="voices-per-day" label="Voices a day" :disabled="!speaking" description="Your own limit. The room keeps its own cap too." tip="Your own limit, 0 to 5 a day. The room keeps its own count too and refuses past Kiyo's cap, whichever comes first.">
       <GlassSelect class="per-day" :model-value="valueOf(settings, 'roomVoicesPerDay')" :options="PER_DAY" :disabled="locked || !speaking" aria-label="Voices a day" @update:model-value="(n) => saveVoices('voices-per-day', { roomVoicesPerDay: Number(n) })" />
     </SettingRow>
-    <SettingRow id="voice-id" label="ElevenLabs voice ID" :disabled="!speaking" description="Empty for the default voice, the same one STUDIO uses." tip="Copy a voice's ID from your ElevenLabs Voices page. Leave it empty for the default voice, the same one STUDIO uses.">
+    <SettingRow v-if="!localVoice" id="voice-id" label="ElevenLabs voice ID" :disabled="!speaking" description="Empty for the default voice, the same one STUDIO uses." tip="Copy a voice's ID from your ElevenLabs Voices page. Leave it empty for the default voice, the same one STUDIO uses.">
       <SettingText :model-value="settings.roomVoiceId || ''" label="ElevenLabs voice ID" placeholder="the default voice" :maxlength="64" :disabled="locked || !speaking" @save="(v) => saveVoices('voice-id', { roomVoiceId: v.trim() || null })" />
     </SettingRow>
     <SettingRow v-if="voices && speaking" id="voices-today" label="Today">

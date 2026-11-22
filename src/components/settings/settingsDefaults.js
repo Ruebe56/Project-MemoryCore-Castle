@@ -20,6 +20,7 @@ export const SETTINGS_DEFAULTS = {
   roomPictureQuality: 'low',
   roomVoicesOn: false,
   roomVoicesPerDay: 2,
+  roomVoiceEngine: 'elevenlabs',
   roomShelfOn: false,
   dailyMoodOn: true,
   keeperSpeaks: true,
