@@ -255,7 +255,6 @@ fn collect_diary(folder: &Path, bundle: &mut Bundle) {
 /// The longest title or name a row holds (VARCHAR(255)), and the longest status or date
 /// (VARCHAR(64)), in characters as the database counts them.
 const TITLE_MAX: usize = 255;
-const SHORT_MAX: usize = 64;
 
 /// `text` cut to at most `max` characters, ending in "…" when it was longer. A row is only a
 /// view of its file - the file itself is kept whole in imported_files - so a long title is
@@ -1105,7 +1104,7 @@ mod tests {
         // the link ends at its own ")", not at the last one in the cell
         assert_eq!(garden.source_file.as_deref(), Some("projects/active/garden.md"));
         let kept = garden.status.as_deref().unwrap();
-        assert!(kept.chars().count() <= SHORT_MAX && kept.starts_with("Live ──") && kept.ends_with('…'));
+        assert!(kept.chars().count() <= PROJECT_TEXT_MAX && kept.starts_with("Live ──") && kept.ends_with('…'));
         // the archived table names its columns differently: Project | Archived | Reason
         let old = &bundle.projects[1];
         assert_eq!(
